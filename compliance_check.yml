@@ -1,0 +1,67 @@
+- name: Check system compliance
+  hosts: class_linux_server
+  strategy: free
+  gather_facts: yes
+  vars:
+    csv_path: /tmp
+    csv_filename: compliance_report.csv
+
+  tasks:
+    - name: Check CURL availability
+      command: which curl
+      register: curl_available
+      ignore_errors: true
+
+    - name: Get OS information
+      command: lsb_release -a
+      register: os_info
+      ignore_errors: true
+
+    - name: Get NSS version
+      shell: >
+        {% if "Ubuntu" in os_info.stdout %}
+          dpkg -l | grep 'libnss[0-9.]:' | awk '{print $3}' | cut -d: -f2 | cut -d- -f1 | sort -nr | head -n 1
+        {% else %}
+          rpm -qa | grep -o 'nss-[0-9.]*-[0-9]*' | cut -d '-' -f2 | sort -nr | head -n 1
+        {% endif %}
+      register: current_nss_version
+      ignore_errors: true
+      vars:
+        ansible_command_warnings: false
+    
+    - name: Check minimum NSS version
+      assert:
+        that:
+          - current_nss_version.stdout.split('.')[0] | int >= 3
+          - current_nss_version.stdout.split('.')[1] | int >= 2
+        msg: "NSS version is below the minimum required (3.2)"
+      when: current_nss_version.stdout is defined
+      register: nss_version
+      ignore_errors: true
+
+    - name: Check VMware Tools version
+      shell: |
+        VMTOOL=$(whereis vmtoolsd |cut -d: -f2 | sed 's/^[ \t]*//')
+        $VMTOOL -v | cut -d, -f2 | sed 's/^[ \t]*//' | cut -d\( -f1 | awk '{print $2}'
+      register: current_vmware_tools_version
+      ignore_errors: true
+
+    - name: Check minimum VMware Tools version
+      assert:
+        that:
+          - current_vmware_tools_version.stdout.split('.')[0] | int >= 10
+          - current_vmware_tools_version.stdout.split('.')[1] | int >= 3
+          - current_vmware_tools_version.stdout.split('.')[2] | int >= 25
+        msg: "VMware Tools version is below the minimum required (10.3.25)"
+      when: current_vmware_tools_version.stdout is defined
+      register: vmware_tools_version
+      ignore_errors: true
+
+    - name: Generate compliance report CSV
+      delegate_to: localhost
+      run_once: true
+      vars:
+        report_content: |
+          "Server Name","CURL Availability","NSS Version","VMware Tools Version"
+          "{{ ansible_hostname }}","{{ "Available" if curl_available.rc == 0 else "Unavailable" }}","{{ current_nss_version.stdout }}","{{ current_vmware_tools_version.stdout }}"
+      shell: echo "{{ report_content }}" > "{{ csv_path }}/{{ csv_filename }}"
